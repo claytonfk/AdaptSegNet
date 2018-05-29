@@ -44,6 +44,8 @@ def colorize_mask(mask):
 
     return new_mask
 
+
+
 def get_arguments():
     """Parse all the arguments provided from the CLI.
 

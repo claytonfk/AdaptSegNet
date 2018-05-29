@@ -32,5 +32,9 @@ class CrossEntropy2d(nn.Module):
             return Variable(torch.zeros(1))
         predict = predict.transpose(1, 2).transpose(2, 3).contiguous()
         predict = predict[target_mask.view(n, h, w, 1).repeat(1, 1, 1, c)].view(-1, c)
+        
+        # MODIFICATION TO AVOID RUNTIME ERROR
         loss = F.cross_entropy(predict, target, weight=weight, size_average=self.size_average)
+        #loss = F.nll_loss(F.log_softmax(predict, 1), target, weight=weight, size_average = self.size_average, ignore_index=-100, reduce=True)
+        
         return loss

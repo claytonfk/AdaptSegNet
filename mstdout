@@ -1,0 +1,12 @@
+Job <427009> is submitted to queue <gpu.4h>.
+0 processd
+100 processd
+200 processd
+300 processd
+400 processd
+evaluate.py:125: UserWarning: volatile was removed and now has no effect. Use `with torch.no_grad():` instead.
+  output = model(Variable(image, volatile=True).cuda(gpu0))
+/cluster/home/zaziza/miniconda2/envs/myenv/lib/python3.6/site-packages/torch/nn/functional.py:1749: UserWarning: Default upsampling behavior when mode=bilinear is changed to align_corners=False since 0.4.0. Please specify align_corners=True if the old behavior is desired. See the documentation of nn.Upsample for details.
+  "See the documentation of nn.Upsample for details.".format(mode))
+meanIOU: 0.5874433642499488
+

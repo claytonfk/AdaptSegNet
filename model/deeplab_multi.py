@@ -3,7 +3,6 @@ import math
 import torch.utils.model_zoo as model_zoo
 import torch
 import numpy as np
-
 affine_par = True
 
 
@@ -13,7 +12,6 @@ def outS(i):
     i = int(np.ceil((i + 1) / 2.0))
     i = (i + 1) / 2
     return i
-
 
 def conv3x3(in_planes, out_planes, stride=1):
     "3x3 convolution with padding"
@@ -99,7 +97,6 @@ class Bottleneck(nn.Module):
 
         return out
 
-
 class Classifier_Module(nn.Module):
     def __init__(self, inplanes, dilation_series, padding_series, num_classes):
         super(Classifier_Module, self).__init__()
@@ -109,7 +106,8 @@ class Classifier_Module(nn.Module):
                 nn.Conv2d(inplanes, num_classes, kernel_size=3, stride=1, padding=padding, dilation=dilation, bias=True))
 
         for m in self.conv2d_list:
-            m.weight.data.normal_(0, 0.01)
+            #m.weight.data.normal_(0, 0.01)
+            m.weight.data = torch.nn.init.xavier_uniform_(m.weight.data)
 
     def forward(self, x):
         out = self.conv2d_list[0](x)
@@ -136,10 +134,11 @@ class ResNet(nn.Module):
         self.layer5 = self._make_pred_layer(Classifier_Module, 1024, [6, 12, 18, 24], [6, 12, 18, 24], num_classes)
         self.layer6 = self._make_pred_layer(Classifier_Module, 2048, [6, 12, 18, 24], [6, 12, 18, 24], num_classes)
 
-        for m in self.modules():
+        for m in self.modules():             
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, 0.01)
+                #m.weight.data.normal_(0, 0.01)
+                m.weight.data = torch.nn.init.xavier_uniform_(m.weight.data)
             elif isinstance(m, nn.BatchNorm2d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()

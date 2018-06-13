@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 import random
 
 from model.deeplab_multi import Res_Deeplab
+#from model.deeplab_multi import Res_Deeplab50
 from model.deeplab_multi2 import Res_Deeplab2
 from model.discriminator import FCDiscriminator
 from utils.loss import CrossEntropy2d
@@ -34,7 +35,7 @@ from dataset.val_dataset import valDataSet
 from PIL import Image
 
 from multiprocessing import Pool 
-from metric import ConfusionMatrix
+from utils.metric import ConfusionMatrix
 
 ADV_OPTION = 1
 MODEL = 'DeepLab'
@@ -52,6 +53,7 @@ INPUT_SIZE = '550,550'
 INPUT_SIZE_TARGET = '550,550'
 IGNORE_LABEL = 0
 ITER_SIZE = 1
+I_PARTS_INDEX = 0 # if we restore from cityscapes
 LEARNING_RATE = 2.5e-4
 LEARNING_RATE_D = 1e-4
 LAMBDA_SEG = 0.1
@@ -60,8 +62,9 @@ LAMBDA_ADV_TARGET2 = 0.001
 MOMENTUM = 0.9
 NUM_VAL_IMAGES = 50
 NUM_CLASSES = 19
+NUM_LAYERS = 23
 NUM_STEPS = 250000
-NUM_STEPS_STOP = 80000  # early stopping
+NUM_STEPS_STOP = 120000  # early stopping
 NUM_MODELS_KEEP = 15
 NUM_WORKERS = 4
 POWER = 0.9
@@ -78,7 +81,7 @@ WEIGHT_DECAY = 0.0005
 
 #IMG_MEAN = np.array((104.00698793, 116.66876762, 122.67891434), dtype=np.float32)
 
-
+palette2 = [[0, 0, 0], [82, 5, 9], [92, 32, 10], [90, 67, 17], [131, 34, 10]] # Airsim
 palette = [[0, 0, 0], [255, 255, 255], [0, 0, 255], [0, 255, 255], [255, 255, 0]] # RGB Last color is the color of ignore_label
 #palette = [[255, 255, 255], [0, 0, 255], [0, 255, 255], [255, 255, 0]] # RGB
 #palette = [0, 0, 0, 82, 5, 9, 92, 32, 10, 90, 67, 17, 131, 34, 10]
@@ -95,6 +98,14 @@ def get_arguments():
       A list of parsed arguments.
     """
     parser = argparse.ArgumentParser(description="DeepLab-ResNet Network")
+    parser.add_argument("--augment_1", action="store_true",
+                    help="Whether to augment first source dataset")
+    parser.add_argument("--augment_2_rotate", action="store_true",
+                    help="Whether to augment second source dataset, rotation")
+    parser.add_argument("--augment_2_flip", action="store_true",
+                    help="Whether to augment second source dataset")
+    parser.add_argument("--augment_2_light", action="store_true",
+                    help="Whether to augment second source dataset")
     parser.add_argument("--adv-option", type=int, default=ADV_OPTION,
                         help="One of options for adversarial training of the generator")
     parser.add_argument("--model", type=str, default=MODEL,
@@ -131,6 +142,8 @@ def get_arguments():
                         help="Which layers to freeze.")
     parser.add_argument("--input-size-target", type=str, default=INPUT_SIZE_TARGET,
                         help="Comma-separated string with height and width of target images.")
+    parser.add_argument("--i-parts-index", type=int, default=I_PARTS_INDEX,
+                        help="0 if restoring weights from pretrained Cityscapes, otherwise 1).")
     parser.add_argument("--is-training", action="store_true",
                         help="Whether to updates the running means and variances during the training.")
     parser.add_argument("--learning-rate", type=float, default=LEARNING_RATE,
@@ -149,6 +162,8 @@ def get_arguments():
                         help="Whether to not restore last (FC) layers.")
     parser.add_argument("--num-classes", type=int, default=NUM_CLASSES,
                         help="Number of classes to predict (including background).")
+    parser.add_argument("--num-layers", type=int, default=NUM_LAYERS,
+                        help="23 for resnet101, 6 for resnet50")
     parser.add_argument("--num-steps", type=int, default=NUM_STEPS,
                         help="Number of training steps.")
     parser.add_argument("--num-steps-stop", type=int, default=NUM_STEPS_STOP,
@@ -190,9 +205,9 @@ args = get_arguments()
 
 if args.source == 'cityscapes':
     IMG_MEAN_SOURCE = np.array((72.3923987619416, 82.90891754262587, 73.15835921071157), dtype=np.float32) # cityscapes BGR
-    IMG_MEAN_SOURCE2 = np.array((161.64004293845025, 182.39772122946766, 177.04658873128523), dtype=np.float32) # airsim BGR
+    IMG_MEAN_SOURCE2 = np.array((175.4872285082577, 194.67600866800535, 189.40416391663257), dtype=np.float32) # airsim BGR
 else:
-    IMG_MEAN_SOURCE = np.array((161.64004293845025, 182.39772122946766, 177.04658873128523), dtype=np.float32) # airsim BGR
+    IMG_MEAN_SOURCE = np.array((175.4872285082577, 194.67600866800535, 189.40416391663257), dtype=np.float32) # airsim BGR
     IMG_MEAN_SOURCE2 = np.array((72.3923987619416, 82.90891754262587, 73.15835921071157), dtype=np.float32) # cityscapes BGR
 IMG_MEAN_TARGET = np.array((84.96108839384782,  90.37637720260379, 93.43303655945203), dtype=np.float32) # ISPRS all BGR
 
@@ -365,6 +380,29 @@ def concatenate_side_by_side(list_images):
 def concatenate_above_and_below(list_images):
     return np.concatenate(list_images, axis = 1)
 
+def save_image_for_test(image, label, size, pred, i_iter):
+    pred = pred.cpu().data[0].numpy()
+    size = size[0].numpy()
+    output = pred[:,:size[0],:size[1]]
+    output = output.transpose(1,2,0)
+    output = np.asarray(np.argmax(output, axis=2), dtype=np.uint8)
+    output_col = colorize(output, args.num_classes, palette2, args.ignore_label)
+    
+    label_val_col = colorize(np.squeeze(label, axis = 2), args.num_classes, palette2, args.ignore_label)
+    
+    image_val = image.cpu().numpy()
+    image_val = image_val[:,::-1,:,:]
+    image_val = np.squeeze(image_val, axis = 0)
+    image_val = image_val.transpose((1, 2, 0))
+    image_val += IMG_MEAN_SOURCE2
+    image_val = image_val.transpose((2, 0, 1))
+
+    output = concatenate_side_by_side([image_val, label_val_col, output_col])
+    output = output.astype(int).transpose((1, 2, 0))
+    output = output[:, :, ::-1]
+    cv.imwrite(r"/cluster/home/zaziza/AdaptSegNet/img"+str(i_iter)+".png", output)
+    return
+
 def non_trainable(dont_train, model):
     '''Freezes layers'''
     
@@ -398,6 +436,8 @@ def main():
     model_num = 0 # The number of model (for saving models)
     
     torch.manual_seed(args.random_seed)
+    torch.cuda.manual_seed_all(args.random_seed)
+    random.seed(args.random_seed)
     
     if not os.path.exists(args.snapshot_dir):
         os.makedirs(args.snapshot_dir)
@@ -416,9 +456,12 @@ def main():
     # init G
     if args.model == 'DeepLab':
         if args.training_option == 1:
-            model = Res_Deeplab(num_classes=args.num_classes)
-        else:
+            model = Res_Deeplab(num_classes=args.num_classes, num_layers = args.num_layers)
+        elif args.training_option == 2:
             model = Res_Deeplab2(num_classes=args.num_classes)
+        '''elif args.training_option == 3:
+            model = Res_Deeplab50(num_classes=args.num_classes)'''
+            
         if args.restore_from[:4] == 'http' :
             saved_state_dict = model_zoo.load_url(args.restore_from)
         else:
@@ -426,13 +469,28 @@ def main():
             
         new_params = model.state_dict().copy()
         
+        for k, v in saved_state_dict.items():
+            print(k)
+        
+        for k in new_params:
+            print(k)
+        
+        # 1. filter out unnecessary keys
+        #saved_state_dict = {k: v for k, v in saved_state_dict.items() if k in new_params}
+        
+        # 2. overwrite entries in the existing state dict
+        #new_params.update(saved_state_dict) 
+        
         for i in saved_state_dict:
             i_parts = i.split('.')
-            if args.not_restore_last == True:
-                if not i_parts[1] == 'layer5' and not i_parts[1] == 'layer6':
-                    new_params['.'.join(i_parts[1:])] = saved_state_dict[i]
-            else:
-                new_params['.'.join(i_parts[1:])] = saved_state_dict[i]        
+            if '.'.join(i_parts[args.i_parts_index:]) in new_params:
+                print("Restored...")
+                if args.not_restore_last == True:
+                    if not i_parts[args.i_parts_index] == 'layer5' and not i_parts[args.i_parts_index] == 'layer6':
+                        new_params['.'.join(i_parts[args.i_parts_index:])] = saved_state_dict[i]                
+                else:
+                    new_params['.'.join(i_parts[args.i_parts_index:])] = saved_state_dict[i]       
+
         model.load_state_dict(new_params)
 
     model.train()
@@ -451,20 +509,21 @@ def main():
                                                     args.data_list, 
                                                     max_iters=args.num_steps * args.iter_size * args.batch_size,
                                                     crop_size=input_size,
-                                                    scale=args.random_scale, 
-                                                    mirror=args.random_mirror, 
+                                                    random_rotate=args.augment_1, 
+                                                    random_flip=args.augment_1,
+                                                    random_lighting=args.augment_1,
                                                     mean=IMG_MEAN_SOURCE,
                                                     ignore_label=args.ignore_label),
                                   batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
-
     trainloader_iter = enumerate(trainloader)
     
     trainloader2 = data.DataLoader(sourceDataSet(args.data_dir2, 
                                                     args.data_list2, 
                                                     max_iters=args.num_steps * args.iter_size * args.batch_size,
                                                     crop_size=input_size,
-                                                    scale=args.random_scale, 
-                                                    mirror=args.random_mirror, 
+                                                    random_rotate=args.augment_2_rotate, 
+                                                    random_flip=args.augment_2_flip, 
+                                                    random_lighting=args.augment_2_light,
                                                     mean=IMG_MEAN_SOURCE2,
                                                     ignore_label=args.ignore_label),
                                   batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
@@ -547,8 +606,9 @@ def main():
                     images = Variable(images).cuda(args.gpu)
 
                     _, batch = next(trainloader_iter2) # Main (airsim) discriminator2 and final output
-                    images2, labels2, _, train_name2 = batch
+                    images2, labels2, size, train_name2 = batch
                     images2 = Variable(images2).cuda(args.gpu)
+
 
                     pred1, _ = model(images)
                     pred1 = interp(pred1)
@@ -558,17 +618,24 @@ def main():
                     #pred1 = interp(pred1)
                     pred2 = interp(pred2)
 
+                    #print("hi", images2, labels2, size, pred2)
+                    # Save img
+                    '''if i_iter % 5 == 0:
+                        print("saving")
+                        save_image_for_test(images2, labels2, size, pred2, i_iter)'''
+
+
                     loss_seg1 = loss_calc(pred1, labels, args.gpu, args.ignore_label, train_name)
                     loss_seg2 = loss_calc(pred2, labels2, args.gpu, args.ignore_label, train_name2)
-                    
+
                     loss = loss_seg2 + args.lambda_seg * loss_seg1
 
                     # proper normalization
                     loss = loss / args.iter_size
                     loss.backward()
-                    
 
-                    
+
+
 
                     if isinstance(loss_seg1.data.cpu().numpy(), list): 
                         loss_seg_value1 += loss_seg1.data.cpu().numpy()[0] / args.iter_size

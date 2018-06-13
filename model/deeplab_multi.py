@@ -223,7 +223,15 @@ class ResNet(nn.Module):
                 {'params': self.get_10x_lr_params(), 'lr': 10 * args.learning_rate}]
 
 
-def Res_Deeplab(num_classes=21):
-    model = ResNet(Bottleneck, [3, 4, 23, 3], num_classes)
+def Res_Deeplab(num_classes=21, num_layers=23):
+    model = ResNet(Bottleneck, [3, 4, num_layers, 3], num_classes)
     return model
+
+'''def Res_Deeplab50(num_classes=21):
+    """Constructs a ResNet-50 model."""
+    model = ResNet(Bottleneck, [3, 4, 6, 3], num_classes)
+    return model'''
+
+
+
 

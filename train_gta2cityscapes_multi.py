@@ -33,7 +33,7 @@ from dataset.val_dataset import valDataSet
 from PIL import Image
 
 from multiprocessing import Pool 
-from metric import ConfusionMatrix
+from utils.metric import ConfusionMatrix
 
 MODEL = 'DeepLab'
 BATCH_SIZE = 1
@@ -52,11 +52,12 @@ EXPERIMENT = 0
 VAL_EVERY = 10
 NUM_VAL_IMAGES = 50
 INPUT_SIZE_TARGET = '550,550'
+I_PARTS_INDEX = 0 # if we restore from cityscapes
 LEARNING_RATE = 2.5e-4
 MOMENTUM = 0.9
 NUM_CLASSES = 19
 NUM_STEPS = 250000
-NUM_STEPS_STOP = 80000  # early stopping
+NUM_STEPS_STOP = 120000  # early stopping
 POWER = 0.9
 RANDOM_SEED = 1234
 RESTORE_FROM = '/cluster/work/riner/users/zaziza/snapshots/AdaptSegNet/DeepLab_resnet_pretrained_init-f81d91e8.pth' # ImageNet
@@ -92,6 +93,14 @@ def get_arguments():
       A list of parsed arguments.
     """
     parser = argparse.ArgumentParser(description="DeepLab-ResNet Network")
+    parser.add_argument("--augment_1", action="store_true",
+                    help="Whether to augment first source dataset")
+    parser.add_argument("--augment_2_rotate", action="store_true",
+                    help="Whether to augment second source dataset, rotation")
+    parser.add_argument("--augment_2_flip", action="store_true",
+                    help="Whether to augment second source dataset")
+    parser.add_argument("--augment_2_light", action="store_true",
+                    help="Whether to augment second source dataset")
     parser.add_argument("--model", type=str, default=MODEL,
                         help="available options : DeepLab")
     parser.add_argument("--source", type=str, default=SOURCE,
@@ -126,6 +135,8 @@ def get_arguments():
                         help="Comma-separated string with height and width of target images.")
     parser.add_argument("--is-training", action="store_true",
                         help="Whether to updates the running means and variances during the training.")
+    parser.add_argument("--i-parts-index", type=int, default=I_PARTS_INDEX,
+                        help="0 if restoring weights from pretrained Cityscapes, otherwise 1).")
     parser.add_argument("--learning-rate", type=float, default=LEARNING_RATE,
                         help="Base learning rate for training with polynomial decay.")
     parser.add_argument("--learning-rate-D", type=float, default=LEARNING_RATE_D,
@@ -354,6 +365,10 @@ def concatenate_side_by_side(list_images):
 def concatenate_above_and_below(list_images):
     return np.concatenate(list_images, axis = 1)
 
+def save_image_for_test(output, i_iter):
+    output.save('%s/%s' % ("./", "img"+i_iter))
+    return
+
 def non_trainable(dont_train, model):
     '''Freezes layers'''
     
@@ -387,6 +402,8 @@ def main():
     model_num = 0
     
     torch.manual_seed(args.random_seed)
+    torch.cuda.manual_seed_all(args.random_seed)
+    random.seed(args.random_seed)
     
     h, w = map(int, args.input_size.split(','))
     input_size = (h, w)
@@ -399,7 +416,10 @@ def main():
 
     # Create network
     if args.model == 'DeepLab':
-        model = Res_Deeplab(num_classes=args.num_classes)
+        if args.training_option == 1:
+            model = Res_Deeplab(num_classes=args.num_classes, num_layers = args.num_layers)
+        elif args.training_option == 2:
+            model = Res_Deeplab2(num_classes=args.num_classes)
         if args.restore_from[:4] == 'http' :
             saved_state_dict = model_zoo.load_url(args.restore_from)
         else:
@@ -407,30 +427,23 @@ def main():
             
         new_params = model.state_dict().copy()
         
+        for k, v in saved_state_dict.items():
+            print(k)
+        
+        for k in new_params:
+            print(k)
+        
         for i in saved_state_dict:
             i_parts = i.split('.')
             
-            '''if args.not_restore_last == True:
-                if not i_parts[1] == 'layer5' and not i_parts[1] == 'layer6':
-                    new_params['.'.join(i_parts[1:])] = saved_state_dict[i]
-            else:
-                new_params['.'.join(i_parts[1:])] = saved_state_dict[i]'''
-                
-            if args.not_restore_last == True:
-                if not i_parts[0] == 'layer5' and not i_parts[0] == 'layer6':
-                    if 'layer' in i_parts[0]:
-                        print('if', i_parts[0])
-                        new_params['.'.join(i_parts[0:])] = saved_state_dict[i]
-                    else:
-                        print('if_else', i_parts[0])
-            else:
-                if 'layer' in i_parts[0]:
-                    print('else', i_parts[0])
-                    new_params['.'.join(i_parts[0:])] = saved_state_dict[i]
+            if '.'.join(i_parts[args.i_parts_index:]) in new_params:
+                print("Restored...")
+                if args.not_restore_last == True:
+                    if not i_parts[args.i_parts_index] == 'layer5' and not i_parts[args.i_parts_index] == 'layer6':
+                        new_params['.'.join(i_parts[args.i_parts_index:])] = saved_state_dict[i]                
                 else:
-                    print('else_else', i_parts[0])
-                    
-            
+                    new_params['.'.join(i_parts[args.i_parts_index:])] = saved_state_dict[i] 
+                
         model.load_state_dict(new_params)
 
     model.train()
@@ -453,12 +466,23 @@ def main():
     if not os.path.exists(args.snapshot_dir):
         os.makedirs(args.snapshot_dir)
 
-    trainloader = data.DataLoader(sourceDataSet(args.data_dir, 
+    '''trainloader = data.DataLoader(sourceDataSet(args.data_dir, 
                                                     args.data_list, 
                                                     max_iters=args.num_steps * args.iter_size * args.batch_size,
                                                     crop_size=input_size,
                                                     scale=args.random_scale, 
                                                     mirror=args.random_mirror, 
+                                                    mean=IMG_MEAN_SOURCE,
+                                                    ignore_label=args.ignore_label),
+                                  batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)'''
+    
+    trainloader = data.DataLoader(sourceDataSet(args.data_dir, 
+                                                    args.data_list, 
+                                                    max_iters=args.num_steps * args.iter_size * args.batch_size,
+                                                    crop_size=input_size,
+                                                    random_rotate=args.augment_1, 
+                                                    random_flip=args.augment_1,
+                                                    random_lighting=args.augment_1, 
                                                     mean=IMG_MEAN_SOURCE,
                                                     ignore_label=args.ignore_label),
                                   batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
@@ -479,7 +503,7 @@ def main():
     
     valloader = data.DataLoader(valDataSet(args.data_dir_val, args.data_list_val, crop_size=input_size_target, mean=IMG_MEAN_TARGET, scale=False, mirror=False),
                                 batch_size=1, 
-                                shuffle=True, 
+                                shuffle=False, 
                                 pin_memory=True)
 
     # implement model.optim_parameters(args) to handle different models' lr setting
@@ -549,6 +573,10 @@ def main():
                     pred1, pred2 = model(images)
                     pred1 = interp(pred1)
                     pred2 = interp(pred2)
+                    
+                    # Save img
+                    '''if i_iter % 5 == 0:
+                        save_image_for_test(concatenate_side_by_side([images, labels, pred2]), i_iter)'''
 
                     loss_seg1 = loss_calc(pred1, labels, args.gpu, args.ignore_label, train_name)
                     loss_seg2 = loss_calc(pred2, labels, args.gpu, args.ignore_label, train_name)
@@ -585,7 +613,7 @@ def main():
             pred_target1, pred_target2 = model(images)
             pred_target1 = interp_target(pred_target1)
             pred_target2 = interp_target(pred_target2)
-            
+                        
             #total_image2 = vutils.make_grid(torch.cat((images.cuda()), dim = 2),normalize=True, scale_each=True)
             #total_image2 = images.cuda()
             #, pred_target1.cuda(), pred_target2.cuda()
